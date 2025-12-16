@@ -1,0 +1,14 @@
+[project]
+name = "claude-do"
+version = "0.1.0"
+description = "Utility fuctions to write instructions in English inside python code and let Claude implement them."
+readme = "README.md"
+authors = [
+    { name = "astOwOlfo", email = "volodimir1024@gmail.com" }
+]
+requires-python = ">=3.9"
+dependencies = [
+    "anthropic",
+    "openai",
+]
+
