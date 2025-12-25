@@ -9,6 +9,7 @@ from os import makedirs
 from io import StringIO
 import re
 import json
+from functools import partial
 from dataclasses import dataclass
 from typing import Any, Literal, Callable, Union, Optional
 
@@ -25,7 +26,7 @@ class ClaudeDoArgument:
         assert isinstance(self.type, str), "`ClaudeDoArgument.type` should be a string."
 
 
-hash_to_imported_symbol: dict[str, Union[Callable, type]] = {}
+filename_to_imported_symbol: dict[str, Union[Callable, type]] = {}
 
 
 PROMPT = """Please implement a function or class with the following signature.
@@ -75,6 +76,7 @@ def claude_do(
     prompt: str,
     *args,
     claude_do_return_type: Union[str, Literal["not_provided"]] = "not_provided",
+    claude_do_generated_code_filename: Optional[str] = None,
     claude_do_model: str = "claude-opus-4-5",
     claude_do_max_tokens: int = 16384,
     claude_do_temperature: float = 1.0,
@@ -100,18 +102,20 @@ def claude_do(
         key: arg.value for key, arg in decorated_kwargs.items()
     }
 
-    hash: str = hash_claude_do_input(
-        prompt=prompt,
-        decorated_args=decorated_args,
-        decorated_kwargs=decorated_kwargs,
-        return_type=claude_do_return_type,
-        model=claude_do_model,
-        max_tokens=claude_do_max_tokens,
-        temperature=claude_do_temperature,
-        base_url=claude_do_base_url,
-        context_files=claude_do_context_files,
-        context_definitions=claude_do_context_definitions,
-    )
+    if claude_do_generated_code_filename is None:
+        hash: str = hash_claude_do_input(
+            prompt=prompt,
+            decorated_args=decorated_args,
+            decorated_kwargs=decorated_kwargs,
+            return_type=claude_do_return_type,
+            model=claude_do_model,
+            max_tokens=claude_do_max_tokens,
+            temperature=claude_do_temperature,
+            base_url=claude_do_base_url,
+            context_files=claude_do_context_files,
+            context_definitions=claude_do_context_definitions,
+        )
+        claude_do_generated_code_filename = f"{hash}.py"
 
     signature: str = function_signature(
         function_name="do_the_thing",
@@ -125,7 +129,7 @@ def claude_do(
         name="do_the_thing",
         signature=signature,
         additional_instructions=None,
-        hash=hash,
+        generated_code_filename=claude_do_generated_code_filename,
         model=claude_do_model,
         max_tokens=claude_do_max_tokens,
         temperature=claude_do_temperature,
@@ -147,6 +151,7 @@ def claude_implement(
     signature: Optional[Union[Callable, type]] = None,
     *,
     additional_instructions: Optional[str] = None,
+    generated_code_filename: Optional[str] = None,
     model: str = "claude-opus-4-5",
     max_tokens: int = 16384,
     temperature: float = 1.0,
@@ -155,29 +160,31 @@ def claude_implement(
     context_definitions: Optional[list[Any]] = None,
 ) -> Union[Callable, type]:
     def claude_implement_decorator(
-        signature: Union[Callable, type],
+        signature: Union[Callable, type], _generated_code_filename: Optional[str]
     ) -> Union[Callable, type]:
         name: str = signature.__name__
         signature_source_code: str = getsource(signature)
         signature_source_code = remove_claude_do_decorator(signature_source_code)
 
-        hash: str = hash_claude_implement_input(
-            name=name,
-            signature=signature_source_code,
-            additional_instructions=additional_instructions,
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            base_url=base_url,
-            context_files=context_files,
-            context_definitions=context_definitions,
-        )
+        if _generated_code_filename is None:
+            hash: str = hash_claude_implement_input(
+                name=name,
+                signature=signature_source_code,
+                additional_instructions=additional_instructions,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                base_url=base_url,
+                context_files=context_files,
+                context_definitions=context_definitions,
+            )
+            _generated_code_filename = f"{hash}.py"
 
         return claude_implement_signature(
             name=name,
             signature=signature_source_code,
             additional_instructions=additional_instructions,
-            hash=hash,
+            generated_code_filename=_generated_code_filename,
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -187,9 +194,13 @@ def claude_implement(
         )
 
     if signature is not None:
-        return claude_implement_decorator(signature)
+        return claude_implement_decorator(
+            signature, _generated_code_filename=generated_code_filename
+        )
     else:
-        return claude_implement_decorator
+        return partial(
+            claude_implement_decorator, _generated_code_filename=generated_code_filename
+        )
 
 
 def has_hash_comments(code: str) -> bool:
@@ -233,7 +244,7 @@ def claude_implement_signature(
     name: str,
     signature: str,
     additional_instructions,
-    hash: str,
+    generated_code_filename: str,
     model: str,
     max_tokens: int,
     temperature: float,
@@ -241,19 +252,21 @@ def claude_implement_signature(
     context_files: Optional[list[str]],
     context_definitions: Optional[list[Any]],
 ) -> Union[Callable, type]:
-    global hash_to_imported_symbol
+    global filename_to_imported_symbol
 
     if context_definitions is not None:
         assert all(hasattr(symbol, "__name__") for symbol in context_definitions), (
             "All of the elements of `claude_do_context_definitions` should have a `__name__` attribute."
         )
 
-    already_loaded: Optional[Union[Callable, type]] = hash_to_imported_symbol.get(hash)
+    already_loaded: Optional[Union[Callable, type]] = filename_to_imported_symbol.get(
+        generated_code_filename
+    )
     if already_loaded is not None:
         return already_loaded
 
     dir = "claude_do_generated_code"
-    code_filename: str = join(dir, f"{hash}.py")
+    code_filename: str = join(dir, generated_code_filename)
 
     first_time: bool = not isfile(code_filename)
     if first_time:
@@ -299,7 +312,7 @@ def claude_implement_signature(
         symbol_name=name,
         namespace_definitions=context_definitions,
     )
-    hash_to_imported_symbol[hash] = implemented
+    filename_to_imported_symbol[generated_code_filename] = implemented
 
     return implemented
 
